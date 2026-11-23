@@ -1,16 +1,23 @@
+#!/usr/bin/env python3
 import argparse
 import ipaddress
+import sys
+
+from guesser import Guesser
+from tcp_scanner import TCPScanner
+from udp_scanner import UDPScanner
 
 ALL_PORTS = range(1, 65536)
 
 
 def parse_port(text: str) -> int:
-    if not (text.isascii() and text.isdigit()):
+    if not text.isdigit():
         raise ValueError(f'bad port: {text}')
     port = int(text)
     if port < 1 or port > 65535:
         raise ValueError(f'port out of range: {port}')
     return port
+
 
 def parse_range(text: str) -> range:
     if '-' not in text:
@@ -24,9 +31,9 @@ def parse_range(text: str) -> range:
         raise ValueError(f'bad range: {text}')
     return range(first, last + 1)
 
+
 def parse_target(text: str) -> tuple[str, set[int]]:
     protocol, _, ports = text.partition('/')
-    protocol = protocol.lower()
     if protocol not in ('tcp', 'udp'):
         raise ValueError(f'unknown protocol: {protocol}')
 
@@ -37,6 +44,7 @@ def parse_target(text: str) -> tuple[str, set[int]]:
     for part in ports.split(','):
         result.update(parse_range(part))
     return protocol, result
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog='portscan', description='TCP and UDP port scanner')
@@ -54,8 +62,6 @@ def parse_args() -> argparse.Namespace:
         parser.error(f'bad IP address: {args.ip}')
     if args.timeout <= 0:
         parser.error('timeout must be positive')
-    if args.num_threads < 1:
-        parser.error('number of threads must be positive')
 
     if len(args.targets) == 0:
         args.targets = ['tcp', 'udp']
@@ -72,7 +78,33 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def scan(args: argparse.Namespace) -> None:
+    guesser = Guesser(args.ip, args.timeout)
+
+    if len(args.ports['tcp']) > 0:
+        times = TCPScanner(args.ip, args.timeout).scan(args.ports['tcp'])
+        for port in sorted(times):
+            line = f'TCP {port}'
+            if args.verbose:
+                line += f' {times[port]:.2f}'
+            if args.guess:
+                line += ' ' + guesser.guess_tcp(port)
+            print(line, flush=True)
+
+    if len(args.ports['udp']) > 0:
+        ports = UDPScanner(args.ip, args.timeout).scan(args.ports['udp'])
+        protocols = guesser.guess_udp(ports) if args.guess else {}
+        for port in ports:
+            line = f'UDP {port}'
+            if args.guess:
+                line += ' ' + protocols[port]
+            print(line, flush=True)
+
+
 args = parse_args()
-print(args.ip, args.timeout, args.verbose, args.guess)
-for protocol, ports in args.ports.items():
-    print(protocol, len(ports), ports[:5], ports[-3:])
+try:
+    scan(args)
+except PermissionError:
+    print('portscan: raw sockets need root, run with sudo', file=sys.stderr)
+except Exception as e:
+    print(f'portscan: {e}', file=sys.stderr)
